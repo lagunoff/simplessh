@@ -107,18 +107,17 @@ liftEitherC = liftEitherCFree free
 -- | Open a SSH session. The next step is to authenticate.
 openSession :: String  -- ^ Hostname
             -> Integer -- ^ Port
-            -> String  -- ^ Path to the known hosts (e.g. ~/.ssh/known_hosts)
+            -> Integer -- ^ Timeout in seconds
             -> SimpleSSH Session
-openSession hostname port knownhostsPath = liftIOEither $ do
-  hostnameC       <- newCString hostname
-  knownhostsPathC <- newCString knownhostsPath
+openSession hostname port timeout = liftIOEither $ do
+  hostnameC <- newCString hostname
   let portC = fromInteger port
+  let timeoutC = fromInteger timeout
 
   res <- liftEitherC (return . Session) $
-    openSessionC hostnameC portC knownhostsPathC
+    openSessionC hostnameC portC timeoutC
 
   free hostnameC
-  free knownhostsPathC
 
   return res
 
@@ -213,14 +212,14 @@ closeSession = lift . closeSessionC
 -- authenticate with a pair username / password, otherwise see 'withSessionKey'.
 withSessionPassword :: String                   -- ^ Hostname
                     -> Integer                  -- ^ Port
-                    -> String                   -- ^ Path to known_hosts
+                    -> Integer                  -- ^ Timeout in seconds
                     -> String                   -- ^ Username
                     -> String                   -- ^ Password
                     -> (Session -> SimpleSSH a) -- ^ Monadic action on the
                                                 -- session
                     -> SimpleSSH a
-withSessionPassword hostname port knownhostsPath username password action = do
-  session              <- openSession hostname port knownhostsPath
+withSessionPassword hostname port timeout username password action = do
+  session              <- openSession hostname port timeout
   authenticatedSession <- authenticateWithPassword session username password
   ExceptT $
     runExceptT (action authenticatedSession)
@@ -233,16 +232,16 @@ withSessionPassword hostname port knownhostsPath username password action = do
 -- authenticate with a key, otherwise see 'withSessionPassword'.
 withSessionKey :: String                   -- ^ Hostname
                -> Integer                  -- ^ port
-               -> String                   -- ^ Path to known_hosts
+               -> Integer                  -- ^ Timeout in seconds
                -> String                   -- ^ Username
                -> String                   -- ^ Path to public key
                -> String                   -- ^ Path to private key
                -> String                   -- ^ Passphrase
                -> (Session -> SimpleSSH a) -- ^ Monadic action on the session
                -> SimpleSSH a
-withSessionKey hostname port knownhostsPath username publicKeyPath
+withSessionKey hostname port timeout username publicKeyPath
                privateKeyPath passphrase action = do
-  session              <- openSession hostname port knownhostsPath
+  session              <- openSession hostname port timeout
   authenticatedSession <- authenticateWithKey session username publicKeyPath
                                               privateKeyPath passphrase
   ExceptT $

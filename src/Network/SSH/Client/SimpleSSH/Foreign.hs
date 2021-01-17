@@ -54,7 +54,7 @@ foreign import ccall "simplessh_free_either_count"
 foreign import ccall "simplessh_open_session"
   openSessionC :: CString
                -> CUShort
-               -> CString
+               -> CInt
                -> IO CEither
 
 foreign import ccall "simplessh_authenticate_password"

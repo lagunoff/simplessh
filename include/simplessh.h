@@ -8,7 +8,7 @@
 struct simplessh_either *simplessh_open_session(
   const char*,
   uint16_t,
-  const char*);
+  int timeout);
 
 struct simplessh_either *simplessh_authenticate_password(
   struct simplessh_session*,
@@ -35,4 +35,3 @@ struct simplessh_either *simplessh_send_file(
 void simplessh_close_session(struct simplessh_session*);
 
 #endif
-

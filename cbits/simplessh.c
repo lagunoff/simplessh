@@ -7,6 +7,7 @@
 #include <netdb.h>
 #include <errno.h>
 #include <poll.h>
+#include <fcntl.h>
 
 #include <libssh2.h>
 #include <simplessh.h>
@@ -46,7 +47,7 @@ static int waitsocket(int socket_fd, LIBSSH2_SESSION *session) {
   return rc;
 }
 
-inline int get_socket(const char *hostname, uint16_t port) {
+inline int get_socket(const char *hostname, uint16_t port, int timeout) {
   struct addrinfo hints;
   memset(&hints, 0, sizeof(struct addrinfo));
   hints.ai_family   = AF_UNSPEC;
@@ -68,28 +69,28 @@ inline int get_socket(const char *hostname, uint16_t port) {
   for(current = res; current != NULL; current = current->ai_next) {
     do {
       sock = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+      fcntl(sock, F_SETFL, O_NONBLOCK);
     } while(sock == -1 && errno == EINTR);
     if(sock == -1) continue;
 
     rc = connect(sock, res->ai_addr, res->ai_addrlen);
 
-    if(rc == -1 && errno == EINTR) {
-      do {
-        struct pollfd pollfd;
-        pollfd.fd     = sock;
-        pollfd.events = POLLIN;
+    struct pollfd pollfd;
+    pollfd.fd     = sock;
+    pollfd.events = POLLIN;
 
-        rc = poll(&pollfd, 1, -1);
-      } while(rc == -1 && errno == EINTR);
+    rc = poll(&pollfd, 1, timeout * 1000);
 
-      if((rc & POLLIN) != POLLIN) rc = 0;
-    }
+    if (rc == 0 || rc == -1) goto end_loop;
 
-    if(rc != -1) {
+    if(pollfd.revents & (POLLIN | POLLPRI)) {
       freeaddrinfo(res);
+      __auto_type flags = fcntl(sock, F_GETFL);
+      fcntl(sock, F_SETFL, flags & (~O_NONBLOCK));
       return sock;
     }
 
+    end_loop:
     close(sock);
   }
 
@@ -100,10 +101,9 @@ inline int get_socket(const char *hostname, uint16_t port) {
 struct simplessh_either *simplessh_open_session(
     const char *hostname,
     uint16_t port,
-    const char *knownhosts_path) {
+    int timeout) {
   struct simplessh_either *either;
   struct simplessh_session *session;
-  LIBSSH2_KNOWNHOSTS *knownhosts;
   char *hostkey;
   int hostkey_type, rc;
   size_t hostkey_len;
@@ -125,37 +125,17 @@ struct simplessh_either *simplessh_open_session(
   either->u.value = session;
 
   // Connection initialisation
-  session->sock = get_socket(hostname, port);
+  session->sock = get_socket(hostname, port, timeout);
   if(session->sock == -1) returnError(either, CONNECT);
 
   session->lsession = libssh2_session_init();
   if(!session) returnLocalErrorSP(INIT);
 
   libssh2_session_set_blocking(session->lsession, 0);
+  libssh2_session_set_timeout(session->lsession, timeout * 1000);
 
   while((rc = libssh2_session_handshake(session->lsession, session->sock)) == LIBSSH2_ERROR_EAGAIN);
   if(rc) returnLocalErrorSP(HANDSHAKE);
-
-  // Check host in the knownhosts
-  knownhosts = libssh2_knownhost_init(session->lsession);
-  if(!knownhosts) returnLocalErrorSP(KNOWNHOSTS_INIT);
-
-  libssh2_knownhost_readfile(knownhosts, knownhosts_path, LIBSSH2_KNOWNHOST_FILE_OPENSSH);
-
-  hostkey = (char*)libssh2_session_hostkey(session->lsession, &hostkey_len, &hostkey_type);
-  if(hostkey) {
-    struct libssh2_knownhost *host;
-    int check = libssh2_knownhost_check(knownhosts, hostname, hostkey, hostkey_len,
-                                        LIBSSH2_KNOWNHOST_TYPE_PLAIN | LIBSSH2_KNOWNHOST_KEYENC_RAW,
-                                        &host);
-
-    if(check != 0) returnLocalErrorSP(KNOWNHOSTS_CHECK);
-    libssh2_knownhost_free(knownhosts);
-  } else {
-    libssh2_knownhost_free(knownhosts);
-    returnLocalErrorSP(KNOWNHOSTS_HOSTKEY);
-  }
-  // End of the knownhosts checking
 
   return either;
 }
