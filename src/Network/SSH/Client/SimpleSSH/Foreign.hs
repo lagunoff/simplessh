@@ -71,6 +71,16 @@ foreign import ccall "simplessh_authenticate_key"
                    -> CString
                    -> IO CEither
 
+foreign import ccall "simplessh_authenticate_memory"
+  authenticateMemoryC :: Session
+                      -> CString
+                      -> Ptr CChar
+                      -> CInt
+                      -> Ptr CChar
+                      -> CInt
+                      -> CString
+                      -> IO CEither
+
 foreign import ccall "simplessh_exec_command"
   execCommandC :: Session
                -> CString
@@ -79,7 +89,8 @@ foreign import ccall "simplessh_exec_command"
 foreign import ccall "simplessh_send_file"
   sendFileC :: Session
             -> CInt
-            -> CString
+            -> Ptr CChar
+            -> CInt
             -> CString
             -> IO CEither
 

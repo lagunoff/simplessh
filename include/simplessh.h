@@ -30,6 +30,7 @@ struct simplessh_either *simplessh_send_file(
   struct simplessh_session*,
   int,
   const char*,
+  int,
   const char*);
 
 void simplessh_close_session(struct simplessh_session*);

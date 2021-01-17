@@ -180,6 +180,29 @@ struct simplessh_either *simplessh_authenticate_key(
   return either;
 }
 
+struct simplessh_either *simplessh_authenticate_memory(
+    struct simplessh_session *session,
+    const char *username,
+    const char *public_key,
+    int public_key_len,
+    const char *private_key,
+    int private_key_len,
+    const char *passphrase) {
+  int rc;
+  struct simplessh_either *either = malloc(sizeof(struct simplessh_either));
+
+  while((rc = libssh2_userauth_publickey_frommemory(session->lsession, username, strlen(username), public_key, public_key_len, private_key, private_key_len, passphrase)) == LIBSSH2_ERROR_EAGAIN);
+  if(rc) {
+    either->side    = LEFT;
+    either->u.error = AUTHENTICATION;
+  } else {
+    either->side    = RIGHT;
+    either->u.value = session;
+  }
+
+  return either;
+}
+
 struct simplessh_either *simplessh_exec_command(
     struct simplessh_session *session,
     const char *command) {
@@ -290,7 +313,8 @@ struct simplessh_either *simplessh_exec_command(
 struct simplessh_either *simplessh_send_file(
     struct simplessh_session *session,
     int mode,
-    const char *local_path,
+    const char *data,
+    int data_len,
     const char *destination_path) {
   struct simplessh_either *either;
   LIBSSH2_CHANNEL *channel = NULL;
@@ -304,23 +328,13 @@ struct simplessh_either *simplessh_send_file(
   either->u.value = transferred;
 
   #define returnLocalErrorS(err) { \
-    if(f) fclose(f); \
     if(channel) libssh2_channel_free(channel); \
     either->side    = LEFT; \
     either->u.error = err; \
     return either; \
   }
 
-  FILE *f = fopen(local_path, "r");
-  if(f == NULL) returnLocalErrorS(FILEOPEN);
-
-  size_t size;
-  struct stat *fileinfo = malloc(sizeof(struct stat));
-  stat(local_path, fileinfo);
-  size = fileinfo->st_size;
-  free(fileinfo);
-
-  while((channel = libssh2_scp_send(session->lsession, destination_path, mode & 0777, size)) == NULL) {
+  while((channel = libssh2_scp_send(session->lsession, destination_path, mode & 0777, data_len)) == NULL) {
     if(libssh2_session_last_errno(session->lsession) == LIBSSH2_ERROR_EAGAIN) {
       waitsocket(session->sock, session->lsession);
     } else {
@@ -328,11 +342,10 @@ struct simplessh_either *simplessh_send_file(
     }
   }
 
-  char buf[1024];
   char *current;
-  while(!feof(f)) {
-    size_t n = fread(buf, 1, sizeof(buf), f);
-    current = buf;
+  while(*transferred < data_len) {
+    size_t n = min(data_len - *transferred, 16 * 1024);
+    current = data + *transferred;
     // Ready to write n bytes to the channel
     while(n > 0) {
       while((rc = libssh2_channel_write(channel, current, n)) == LIBSSH2_ERROR_EAGAIN);
@@ -346,7 +359,6 @@ struct simplessh_either *simplessh_send_file(
   while(libssh2_channel_send_eof(channel) == LIBSSH2_ERROR_EAGAIN);
   while(libssh2_channel_close(channel) == LIBSSH2_ERROR_EAGAIN);
   while(libssh2_channel_free(channel) == LIBSSH2_ERROR_EAGAIN);
-  fclose(f);
   return either;
 }
 

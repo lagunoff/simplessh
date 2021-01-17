@@ -11,6 +11,7 @@ module Network.SSH.Client.SimpleSSH
   , runSimpleSSH
   , withSessionPassword
   , withSessionKey
+  , withSessionMemory
   , execCommand
   , sendFile
   -- * Lower-level functions
@@ -24,7 +25,9 @@ import           Control.Applicative
 import           Control.Exception
 import           Control.Monad.Except
 
+import           Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as BS
+import qualified Data.ByteString.Unsafe as BS
 
 import           Foreign.C.String
 import           Foreign.Marshal.Alloc
@@ -165,6 +168,31 @@ authenticateWithKey session username publicKeyPath privateKeyPath passphrase =
 
     return res
 
+-- ^ Authenticate with a public key for a given username.
+--
+-- Leave the passphrase empty if not needed.
+authenticateWithMemory :: Session  -- ^ Session to use
+                       -> String   -- ^ Username
+                       -> ByteString
+                       -> ByteString
+                       -> String   -- ^ Passphrase
+                       -> SimpleSSH Session
+authenticateWithMemory session username publicKey privateKey passphrase =
+  liftIOEither $ do
+    (usernameC, passphraseC) <-
+      (,) <$> newCString username
+          <*> newCString passphrase
+
+    res <- BS.unsafeUseAsCStringLen publicKey $
+      \(publicC, publicLen) -> BS.unsafeUseAsCStringLen privateKey $
+      \(privateC, privateLen) -> liftEitherC (return . Session) $
+        authenticateMemoryC session usernameC publicC (fromIntegral publicLen) privateC (fromIntegral privateLen)
+          passphraseC
+
+    mapM_ free [usernameC, passphraseC]
+
+    return res
+
 -- | Send a command to the server.
 --
 -- One should be authenticated before sending commands on a 'Session'.
@@ -184,19 +212,18 @@ execCommand session command = do
 -- One should be authenticated before sending files on a 'Session.
 sendFile :: Session -- ^ Session to use
          -> Integer -- ^ File mode (e.g. 0o777, note the octal notation)
-         -> String  -- ^ Source path
+         -> ByteString -- ^ Data to send
          -> String  -- ^ Target path
          -> SimpleSSH Integer
-sendFile session mode source target = do
+sendFile session mode sourceData target = do
   liftIOEither $ do
-    sourceC <- newCString source
     targetC <- newCString target
     let modeC = fromInteger mode
 
     res <- liftEitherCFree freeEitherCountC readCount $
-      sendFileC session modeC sourceC targetC
+      BS.unsafeUseAsCStringLen sourceData $
+        \(sourceC, len) -> sendFileC session modeC sourceC (fromIntegral len) targetC
 
-    free sourceC
     free targetC
 
     return res
@@ -244,6 +271,29 @@ withSessionKey hostname port timeout username publicKeyPath
   session              <- openSession hostname port timeout
   authenticatedSession <- authenticateWithKey session username publicKeyPath
                                               privateKeyPath passphrase
+  ExceptT $
+    runExceptT (action authenticatedSession)
+      `finally` closeSessionC authenticatedSession
+
+-- | Open a connection, authenticate, execute some action and close the
+-- connection.
+--
+-- It is the safe way of using SimpleSSH. This function is to be used to
+-- authenticate with a key, otherwise see 'withSessionPassword'.
+withSessionMemory :: String                   -- ^ Hostname
+                  -> Integer                  -- ^ port
+                  -> Integer                  -- ^ Timeout in seconds
+                  -> String                   -- ^ Username
+                  -> ByteString               -- ^ Public key content
+                  -> ByteString               -- ^ Private key content
+                  -> String                   -- ^ Passphrase
+                  -> (Session -> SimpleSSH a) -- ^ Monadic action on the session
+                  -> SimpleSSH a
+withSessionMemory hostname port timeout username publicKey
+               privateKey passphrase action = do
+  session              <- openSession hostname port timeout
+  authenticatedSession <- authenticateWithMemory session username publicKey
+                                              privateKey passphrase
   ExceptT $
     runExceptT (action authenticatedSession)
       `finally` closeSessionC authenticatedSession
